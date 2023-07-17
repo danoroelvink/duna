@@ -20,8 +20,10 @@ for i=1:nx
             integ=integ+dzbdx(i-j)/(j*pi);
         end
     end
-    tau_over_tau0(i)=alfa*(integ+beta*dzbdx(i))+1;
+%     tau_over_tau0(i)=alfa*(integ+beta*dzbdx(i))+1;
+    tau_over_tau0(i)=alfa(i)*(integ+beta(i)*dzbdx(i))+1;    
 end
 tau_over_tau0=max(tau_over_tau0,0.1);
+save('kroy.mat','tau_over_tau0','alfa','beta')
 end
 

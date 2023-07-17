@@ -1,8 +1,9 @@
-function [zb,hv,cv]= duna (x,zb0,durat,phi0,u10,zbprev,hv,cv,xrunup,durat_nowind);
+function [zb,hv,cv,Cc,Cu,CuFc,sandtrans]= duna (x,zb0,itoe,icrest,ilee,durat,phi0,u10,zbprev,hv,cv,xrunup,durat_nowind,OffshoreBound,tide,storm)
+
 % Main routine Duna; computes profile change due to wind
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Inputs
-%
+%wet
 % x		uniformly spaced cross-shore distance, increasing shoreward (m)
 % zb0           initial profile elevation (m)
 % durat         duration of wind event (s)
@@ -15,12 +16,20 @@ function [zb,hv,cv]= duna (x,zb0,durat,phi0,u10,zbprev,hv,cv,xrunup,durat_nowind
 % durat_nowind  duration of no-wind events since last call (to allow growth only)
 
 %% General inputs
-[p] = duna_input();
+
+[p] = duna_input(storm,OffshoreBound);
+projectpr=p.projectprofile;
 zb=zb0;
+
+ilee2=find(x>=-50.,1,'first');
+ilee3=find(zb>=6.9,1,'last');
 dx=x(2)-x(1);
+
 
 %% Initialize
 Cc=zeros(size(x));
+Cu=zeros(size(x));
+CuFc=zeros(size(x));
 m=zeros(size(x));
 theta=zeros(size(x));
 dzbdt=zeros(size(x));
@@ -30,20 +39,33 @@ p1=zeros(size(x))+p.p1;
 %% Vegetation maximum as a function of height
 Hvmax=interp1(p.zbvegtab,p.Hvvegtab,zb);       % Maximum plant height =f(zb)
 Cvmax=interp1(p.zbvegtab,p.cvvegtab,zb);       % Maximum plant height =f(zb)
+hvm=max(Hvmax);
+cvm=max(Cvmax);
+% vegetate the lee with max veg
+Hvmax(ilee+1:end)=hvm;
+Cvmax(ilee+1:end)=cvm;
+
+Cvmax(ilee3+1:end)=1.;
+
+save('veg.mat','Hvmax','Cvmax')
 %% update Cvmax and Hvmax so they are constant or increasing landward
 icrit=find(zb>p.zbcrit,1,'first');
 for i=icrit:length(x)
     Hvmax(i)=max(Hvmax(i),Hvmax(i-1));
     Cvmax(i)=max(Cvmax(i),Cvmax(i-1));
 end
+
 %% Initial values for cv if first time and p.veginit==1
 if isfield(p,'veginit')
-    if p.veginit==1 & sum(cv)==0;
+    if p.veginit==1 && sum(cv)==0;
         hv=Hvmax;
         cv=Cvmax;
     end
 end
+
+
 %% Vegetation growth during past non-Duna events, with total duration durat_nowind
+hvprev=hv;
 hv=Hvmax+(hv-Hvmax).*exp(-durat_nowind/p.Tg);
 cv=Cvmax+(cv-Cvmax).*exp(-durat_nowind/p.Tg);
 
@@ -69,20 +91,33 @@ for it=1:p.nt
     t=(it-1)*p.dt;
     
     %% Total water level
+    switch tide
+        case 'no'
+    zs=zeros(size(x))+p.runup;
+        case 'yes'
     zs=p.M2amp*cos(p.M2freq*t)*ones(size(x))+p.runup;
+%       zs=p.M2amp*cos(p.M2freq*t)*ones(size(x));
+    end
     
     %% Wind speed distribution
+    
+    % use different alfa-beta values for kroy in the windward side
+alfagrid(ilee2+1:length(x))=p.alfa2;
+betagrid(ilee2+1:length(x))=p.beta2;
+alfagrid(1:ilee2)=p.alfa;
+betagrid(1:ilee2)=p.beta;
+
     if cos(phi0)>0
         % positive wind direction
-        u10x=u10*cos(phi0) * sqrt( kroy(x,max(zb,zs),p.alfa,p.beta));
+%         u10x=u10*cos(phi0) * sqrt( kroy(x,max(zb,zs),p.alfa,p.beta));
+        u10x=u10*cos(phi0) * sqrt( kroy(x,max(zb,zs),alfagrid,betagrid));     
+        onshore='yes';
     else
-        % negative wind direction: reverse computation direction
-        u10x=u10*cos(phi0) *              ...
-            sqrt( kroy(x(end)-x(end:-1:1), ...
-            max(zb(end:-1:1),zs(end:-1:1)),p.alfa,p.beta));
-        u10x=u10x(end:-1:1);
+        u10x=zeros(size(x));
+        onshore='no';
     end
     v10x=u10*sin(phi0);
+    
     umagx=sqrt(u10x.^2+v10x.^2);
     phi=atan2(v10x,u10x);
     
@@ -94,39 +129,32 @@ for it=1:p.nt
     hv=min(hv,Hvmax);                  % For case of erosion limit hv to Hvmax
     cv=max((Hvmax-dz)./Hvmax,0).*cv;   % Vegetation density reduced by sanding up;
     cv=min(cv,Cvmax);                  % For case of erosion limit cv to Cvmax
-    %% Vegetation maximum as a function of height
-    Hvmax=interp1(p.zbvegtab,p.Hvvegtab,zb);       % Maximum plant height =f(zb)
-    Cvmax=interp1(p.zbvegtab,p.cvvegtab,zb);       % Maximum plant height =f(zb)
-    %% update Cvmax and Hvmax so they are constant or increasing landward
-    icrit=find(zb>p.zbcrit,1,'first');
-    for i=icrit:length(x)
-        Hvmax(i)=max(Hvmax(i),Hvmax(i-1));
-        Cvmax(i)=max(Cvmax(i),Cvmax(i-1));
-    end
+
     %% Vegetation growth
     hv= hv+p.dt*(Hvmax-hv)/p.Tg;% Actual vegetation height growth
     cv= cv+p.dt*(Cvmax-cv)/p.Tg;% Actual vegetation density growth
-    
-    %rhov=min((hv./max(Hvmax,1e-6)).^2,1);          % Vegetation density
-    rhov=(hv./Hvmax.^2);
+  
+    rhov=min((hv./max(max(Hvmax),1e-6)).^2,1);          % Vegetation density
+     
     
     %% Reduction of velocity due to vegetation
     switch p.wind_reduction
         case 'duran'
-            u10x=u10x./((1+p.duran.*rhov).^2);
-            v10x=v10x./((1+p.duran.*rhov).^2);
+            u10x=u10x./(sqrt(1+p.duran.*rhov));
+            v10x=v10x./(sqrt(1+p.duran.*rhov));            
             umagx=sqrt(u10x.^2+v10x.^2);
         case 'buckley'
-            u10x=u10x.*(1-min(p.k*cv,0.7));
-            v10x=v10x.*(1-min(p.k*cv,0.7));
+            u10x(1:ilee-1)=u10x(1:ilee-1).*(1-min(p.k*cv(1:ilee-1),0.7)); 
+            u10x(ilee:ilee3-1)=u10x(ilee:ilee3-1).*(1-min(p.k2*cv(ilee:ilee3-1),0.7));
+            u10x(ilee3:end)=u10x(ilee3:end).*(1-min(p.k3*cv(ilee3:end),0.7));
+            v10x=v10x.*(1-min(p.k*cv,0.7));            
             umagx=sqrt(u10x.^2+v10x.^2);
     end
-    if max(abs(umagx))>u10t0
-        
+    if max(abs(umagx))>u10t0      
         %% Compute water level and wet cells
         wet=zeros(size(x));
         i=1;
-        while zs(i)>zb(i)&i<length(zb)
+        while zs(i)>zb(i)&&i<length(zb)
             wet(i)=1;
             i=i+1;
         end
@@ -151,8 +179,12 @@ for it=1:p.nt
             p1(zb>=p.z_nonero)=1;
         end
         %% Update concentrations
-        [ Cc,Sx ] = compute_transport( Cc,dx,p.dt,u10x,u10t0,Cu,p.Cb,p.T,p1 );
-        
+% calculate transport with beach projected in the direciton of the wind:
+% u10x=u10 && dir is used to x=x/cos(dir)
+           
+        [ Cc,Sx,CuFc ] = compute_transport( Cc,x,dx,p.dt,u10,u10x,u10t0,phi0,Cu,p.Cb,p.T,p1,wet,OffshoreBound,projectpr);
+
+
         %% Update bed level
         if cos(phi0)>0
             for i=2:length(x)
@@ -164,38 +196,45 @@ for it=1:p.nt
             end
         end
         % add a supply
-        for i=1:length(x)
-            if zb(i)>p.zbmin_sup&zb(i)<p.zbmax_sup
-                im1=max(i-1,1);
-                ip1=min(i+1,length(x));
-                if p.supply>0
-                    slope=(zb(ip1)-zb(i))/(x(ip1)-x(i));
-                else
-                    slope=(zb(i)-zb(im1))/(x(i)-x(im1));
+        switch OffshoreBound
+            case 'closed'
+                for i=1:length(x)
+                    if zb(i)>p.zbmin_sup&&zb(i)<p.zbmax_sup
+                        im1=max(i-1,1);
+                        ip1=min(i+1,length(x));
+                        if p.supply>0
+                            slope=(zb(ip1)-zb(i))/(x(ip1)-x(i));
+                        else
+                            slope=(zb(i)-zb(im1))/(x(i)-x(im1));
+                        end
+                        %dzbdt(i)=dzbdt(i)+p.supply/24/3600*slope;  % supply in m/day
+                        dzbdt(i)=p.supply/24/3600*slope;  % supply in m/day
+                    end
+                    if zb(i)>p.zbmax_sup
+                        break
+                    end
                 end
-                %dzbdt(i)=dzbdt(i)+p.supply/24/3600*slope;  % supply in m/day
-                dzbdt(i)=p.supply/24/3600*slope;  % supply in m/day
-            end
-            if zb(i)>p.zbmax_sup
-                break
-            end
+            case 'open'
+                % testing to stabilize beach z (i.e. assuming infinite sand supply)
+                for i=2:itoe
+                    dzbdt(i)=max(dzbdt(i),0);
+                end
         end
         dzbdt(1)=0;
-        
         dz=dzbdt*p.morfac*p.dt;
         zb=zb+dz;
         
         %% Avalanching
         zbefore=zb;
         zb=avalan(x,zb,p);
-        dz=dz+zb-zbefore;
-        
+        dz=dz+zb-zbefore; 
         %% Plastering effect: p1 is fraction of sand susceptible to aeolian transport
         for i=1:length(p1)
             if dz(i)<0
                 p1(i)=max(p1(i)+dz(i)/p.dzmix.*(1-p.p1),0);
             else
                 p1(i)=max(p1(i)+dz(i)/p.dzmix.*(1-p1(i)),0);
+%                 p1(i)=min(p1(i)+dz(i)/p.dzmix.*(1-p1(i)),1);
             end
         end
         
@@ -240,7 +279,18 @@ for it=1:p.nt
             fname=['duna',num2str(round(u10)),'_',num2str(round(phi0*180/pi)),'_',num2str(1000+it)]
             save(fname,'x','u10x','v10x','umagx','u10t0','Cu','Cc','Sx','dzbdt','zb','zbprev','p1','phi','hv','cv')
         end
+        switch onshore
+            case 'no'
+                sandtrans='no';
+            otherwise
+                sandtrans='yes';
+        end
+        
+        
+            else
+        sandtrans='no';
     end
+ 
     
 end
 p.dt=dt0;

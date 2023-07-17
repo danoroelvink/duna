@@ -19,7 +19,7 @@ else
 end
 
 ustart=ustart.*sqrt(max((cos(theta)+cos(phi).*sin(theta)./p.tanalpha),0));
-
+save('critvel0.mat','theta','phi','ustart')
 %% moisture content 
 % uses the geotechnical mass content (ratio of dry mass)
 % m=(moisture*rhow)/(rhos(1 - porosity))
@@ -30,4 +30,4 @@ moister = m > 0.064;    % corresponds to the 10% of volume water content (Delgad
     ustart(moister)=inf;% set to infinity if the content is above 10%
     
 u10t0=ustart/p.kappa.*log(p.z./p.z0);
-
+save('critvel.mat','ustart','u10t0','moist','moister')
